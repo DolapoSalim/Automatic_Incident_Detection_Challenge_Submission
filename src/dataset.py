@@ -227,12 +227,27 @@ class MIVIADataset(Dataset):
         }
 
     def _find_video(self, video_id: str) -> Path:
-        """Try common extensions."""
-        for ext in ["", ".mp4", ".avi", ".mov", ".mkv"]:
-            p = self.videos_dir / f"{video_id}{ext}"
-            if p.exists():
-                return p
-        raise FileNotFoundError(f"Video not found: {video_id} in {self.videos_dir}")
+        """
+        Search for video in:
+          1. videos_dir directly
+          2. videos_dir/train/
+          3. videos_dir/val/
+        Tries common extensions at each level.
+        """
+        search_dirs = [
+            self.videos_dir,
+            self.videos_dir / "train",
+            self.videos_dir / "val",
+        ]
+        for folder in search_dirs:
+            for ext in ["", ".mp4", ".avi", ".mov", ".mkv"]:
+                p = folder / f"{video_id}{ext}"
+                if p.exists():
+                    return p
+        raise FileNotFoundError(
+            f"Video '{video_id}' not found in {self.videos_dir} "
+            f"(also searched train/ and val/ subfolders)"
+        )
 
     def _apply_transforms(self, clips_np: np.ndarray) -> torch.Tensor:
         """
