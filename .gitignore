@@ -4,3 +4,7 @@
 *.mkv
 *.mov
 *.flv
+*.zip
+*.tar
+*.gz
+*.csv
