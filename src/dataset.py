@@ -162,25 +162,78 @@ class MIVIADataset(Dataset):
               f"({sum(s['label'] for s in self.samples)} positive) "
               f"from {csv_path}")
 
+    @staticmethod
+    def _parse_timestamp(ts: str) -> float:
+        """
+        Converts a timestamp string to seconds (float).
+        Handles:
+          - MM:SS        e.g. "00:15"  → 15.0
+          - HH:MM:SS     e.g. "00:01:15" → 75.0
+          - Plain float  e.g. "15.0"   → 15.0
+          - Empty string → -1.0
+        """
+        ts = ts.strip()
+        if not ts:
+            return -1.0
+        parts = ts.split(":")
+        try:
+            if len(parts) == 1:
+                return float(parts[0])
+            elif len(parts) == 2:
+                return int(parts[0]) * 60 + float(parts[1])
+            elif len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        except ValueError:
+            pass
+        return -1.0
+
     def _load_csv(self, path: str) -> List[Dict]:
+        """
+        Loads MIVIA-AID CSV with automatic handling of:
+          - BOM encoding (ï»¿ prefix from Windows UTF-8-BOM files)
+          - Semicolon OR comma delimiters (auto-detected)
+          - MM:SS or HH:MM:SS or float timestamps
+        """
         samples = []
-        with open(path, newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                vid = row["Id Video"].strip()
-                duration = float(row.get("Duration", 0) or 0)
-                start_str = row.get("Start", "").strip()
-                end_str = row.get("End", "").strip()
-                label = 1 if start_str else 0
-                onset_sec = float(start_str) if start_str else -1.0
-                end_sec = float(end_str) if end_str else -1.0
-                samples.append({
-                    "video_id": vid,
-                    "duration": duration,
-                    "label": label,
-                    "onset_sec": onset_sec,
-                    "end_sec": end_sec,
-                })
+
+        # Read raw to detect delimiter and strip BOM
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            raw = f.read()
+
+        # Auto-detect delimiter
+        first_line = raw.splitlines()[0]
+        delimiter = ";" if ";" in first_line else ","
+
+        import io
+        reader = csv.DictReader(io.StringIO(raw), delimiter=delimiter)
+
+        # Normalize fieldnames: strip whitespace and BOM residue
+        reader.fieldnames = [k.strip().lstrip("\ufeff") for k in reader.fieldnames]
+
+        for row in reader:
+            # Strip all values
+            row = {k: (v.strip() if v else "") for k, v in row.items()}
+
+            vid      = row.get("Id Video", row.get("id video", "")).strip()
+            dur_str  = row.get("Duration", "")
+            start_str = row.get("Start", "")
+            end_str   = row.get("End", "")
+
+            duration  = self._parse_timestamp(dur_str) if dur_str else 0.0
+            onset_sec = self._parse_timestamp(start_str)
+            end_sec   = self._parse_timestamp(end_str)
+            label     = 1 if onset_sec >= 0 else 0
+
+            if not vid:
+                continue  # skip blank rows
+
+            samples.append({
+                "video_id":  vid,
+                "duration":  duration,
+                "label":     label,
+                "onset_sec": onset_sec,
+                "end_sec":   end_sec,
+            })
         return samples
 
     def __len__(self):

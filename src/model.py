@@ -87,7 +87,7 @@ class IncidentDetector(nn.Module):
 
     def __init__(
         self,
-        backbone_name: str = "MCG-NJU/videomae-small",
+        backbone_name: str = "MCG-NJU/videomae-base",
         num_frames: int = 16,
         tubelet_size: int = 2,
         context_clips: int = 8,
@@ -127,12 +127,17 @@ class IncidentDetector(nn.Module):
     def extract_clip_features(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            pixel_values: (B, C, T, H, W) — standard VideoMAE input
+            pixel_values: (B, T, C, H, W)
         Returns:
             cls_embeds: (B, D)
         """
+        # If tensor comes in as (B, C, T, H, W), convert it
+        if pixel_values.shape[1] == 3:
+            pixel_values = pixel_values.permute(0, 2, 1, 3, 4)
+
         outputs = self.backbone(pixel_values=pixel_values)
-        # Mean-pool patch tokens (or use CLS-equivalent: mean of sequence)
+
+        # Mean-pool sequence tokens
         return outputs.last_hidden_state.mean(dim=1)
 
     def forward(
@@ -177,7 +182,7 @@ class IncidentDetector(nn.Module):
         """
         # Video-level prediction: max score across clips
         video_scores = scores.max(dim=1).values  # (B,)
-        bce_loss = F.binary_cross_entropy(video_scores, labels.float())
+        bce_loss = F.binary_cross_entropy_with_logits(video_scores, labels.float())
 
         # Temporal onset focal loss for positive samples
         pos_mask = labels == 1
