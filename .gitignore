@@ -8,3 +8,6 @@
 *.tar
 *.gz
 *.csv
+*.pt
+*.pth
+*.log

@@ -142,48 +142,42 @@ class IncidentDetector(nn.Module):
 
     def forward(
         self,
-        clips: torch.Tensor,          # (B, num_clips, C, T, H, W)
-        labels: Optional[torch.Tensor] = None,  # (B,) 0/1 binary
-        onset_frames: Optional[torch.Tensor] = None,  # (B,) frame index of onset (-1 if negative)
+        clips: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+        onset_frames: Optional[torch.Tensor] = None,
+        pos_weight: Optional[torch.Tensor] = None,   # <-- add this
     ):
-        """
-        Full forward pass over a sequence of clips.
-        Returns dict with loss (if training) and scores.
-        """
         B, num_clips, C, T, H, W = clips.shape
 
-        # Extract features for all clips in parallel (flatten batch × clips)
         clips_flat = clips.view(B * num_clips, C, T, H, W)
-        feats_flat = self.extract_clip_features(clips_flat)  # (B*num_clips, D)
-        feats = feats_flat.view(B, num_clips, -1)            # (B, num_clips, D)
+        feats_flat = self.extract_clip_features(clips_flat)
+        feats = feats_flat.view(B, num_clips, -1)
 
-        # Temporal scores
-        scores = self.head(feats)  # (B, num_clips)
+        scores = self.head(feats)
 
         output = {"scores": scores, "threshold": self.threshold}
 
         if labels is not None and onset_frames is not None:
-            loss = self._compute_loss(scores, labels, onset_frames, num_clips)
+            loss = self._compute_loss(scores, labels, onset_frames, num_clips, pos_weight)
             output["loss"] = loss
 
         return output
 
     def _compute_loss(
         self,
-        scores: torch.Tensor,       # (B, num_clips)
-        labels: torch.Tensor,       # (B,)
-        onset_frames: torch.Tensor, # (B,) clip index of onset, -1 for negatives
+        scores: torch.Tensor,
+        labels: torch.Tensor,
+        onset_frames: torch.Tensor,
         num_clips: int,
+        pos_weight: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """
-        Combined loss:
-          - Binary cross-entropy on video-level prediction (max score)
-          - Temporal onset loss: push score spike to onset clip
-        """
-        # Video-level prediction: max score across clips
-        video_scores = scores.max(dim=1).values  # (B,)
-        bce_loss = F.binary_cross_entropy_with_logits(video_scores, labels.float())
-
+        video_scores = scores.max(dim=1).values
+        bce_loss = F.binary_cross_entropy_with_logits(
+            video_scores,
+            labels.float(),
+            pos_weight=pos_weight,   # <-- use it here
+        )
+        # ... rest stays the same
         # Temporal onset focal loss for positive samples
         pos_mask = labels == 1
         onset_loss = torch.tensor(0.0, device=scores.device)

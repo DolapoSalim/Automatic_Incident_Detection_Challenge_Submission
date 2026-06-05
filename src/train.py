@@ -18,6 +18,9 @@ import argparse
 from pathlib import Path
 from typing import Dict, Tuple
 
+# Silence decord corrupted-frame warnings
+os.environ["DECORD_DUPLICATE_WARNING_THRESHOLD"] = "1.0"
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -142,7 +145,7 @@ def find_best_threshold(
     best_thr = 0.5
     best_metrics = {}
 
-    for thr in np.arange(0.2, 0.85, 0.05):
+    for thr in np.arange(0.05, 0.85, 0.05):
 
         metrics = compute_metrics(
             all_scores,
@@ -191,14 +194,14 @@ class Trainer:
             freeze_backbone_layers=cfg["freeze_layers"],
         ).to(self.device)
 
-        # Gradient checkpointing for transformers
-        if hasattr(self.model, "backbone"):
-            self.model.backbone.gradient_checkpointing_enable()
-
         # Freeze backbone to reduce VRAM
         if cfg.get("freeze_backbone", True):
             for p in self.model.backbone.parameters():
                 p.requires_grad = False
+
+        # Gradient checkpointing only makes sense when backbone is trainable
+        if hasattr(self.model, "backbone") and not cfg.get("freeze_backbone", True):
+            self.model.backbone.gradient_checkpointing_enable()
 
         n_params = sum(
             p.numel()
@@ -221,7 +224,15 @@ class Trainer:
             clip_frames=cfg["clip_frames"],
             clip_hop=cfg["clip_hop"],
             max_clips=cfg["max_clips"],
+            use_weighted_sampler=True,
         )
+
+        # Compute class counts for pos_weight in loss
+        train_labels = [s["label"] for s in self.train_loader.dataset.samples]
+        n_pos = sum(train_labels)
+        n_neg = len(train_labels) - n_pos
+        self.pos_weight = torch.tensor([n_pos / max(n_neg, 1)], dtype=torch.float32).to(self.device)
+        print(f"[Trainer] Class balance — pos={n_pos} neg={n_neg} pos_weight={self.pos_weight.item():.3f}")
 
         # -------------------------------------------------------------
         # OPTIMIZER
@@ -292,6 +303,7 @@ class Trainer:
                         clips,
                         labels=labels,
                         onset_frames=onset_clips,
+                        pos_weight=self.pos_weight,
                     )
 
                     loss = out["loss"]
@@ -386,6 +398,13 @@ class Trainer:
             all_fps,
             all_start_frames,
         )
+
+        # Debug: show onset_clip distribution
+        pos_mask = all_labels == 1
+        if pos_mask.any():
+            oc = all_onset_clips[pos_mask]
+            print(f"  [Debug] onset_clip — min={oc.min()} max={oc.max()} "
+                  f"mean={oc.mean():.1f} zeros={int((oc==0).sum())}/{int(pos_mask.sum())}")
 
         metrics["threshold"] = best_thr
 
@@ -518,9 +537,9 @@ def get_default_config():
         "freeze_backbone": True,
 
         # DATA
-        "train_csv": "data/train.csv",
-        "val_csv": "data/val.csv",
-        "videos_dir": "data/train/train",
+        "train_csv": "data/Train_GT.csv",
+        "val_csv": "data/Val_GT.csv",
+        "videos_dir": "data/",
 
         "clip_hop": 8,
         "max_clips": 8,
@@ -533,7 +552,7 @@ def get_default_config():
         "lr": 2e-4,
         "weight_decay": 1e-4,
 
-        "patience": 8,
+        "patience": 15,
 
         "amp": True,
 

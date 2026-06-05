@@ -69,26 +69,24 @@ def extract_clips(
     clip_hop: int = CLIP_HOP,
     max_clips: int = MAX_CLIPS,
 ) -> Tuple[np.ndarray, List[int]]:
-    """
-    Extracts overlapping clips from a video.
-    Returns:
-        clips:        (N, clip_frames, H, W, 3)
-        start_frames: list of N start frame indices
-    """
     T = len(frames)
-    # Start positions for each clip
-    starts = list(range(0, T - clip_frames * clip_stride + 1, clip_hop))
-    if not starts:
-        starts = [0]
+
+    # Adapt stride so we always get at least 4 clips from short videos
+    effective_stride = clip_stride
+    min_clips = 4
+    while effective_stride > 1 and (T - clip_frames * effective_stride) < min_clips * clip_hop:
+        effective_stride = max(1, effective_stride // 2)
+
+    starts = list(range(0, max(1, T - clip_frames * effective_stride + 1), clip_hop))
     starts = starts[:max_clips]
 
     clips = []
     for s in starts:
-        indices = [min(s + i * clip_stride, T - 1) for i in range(clip_frames)]
-        clip = frames[indices]  # (clip_frames, H, W, 3)
+        indices = [min(s + i * effective_stride, T - 1) for i in range(clip_frames)]
+        clip = frames[indices]
         clips.append(clip)
 
-    return np.stack(clips), starts  # (N, clip_frames, H, W, 3), [int...]
+    return np.stack(clips), starts
 
 
 # ---------------------------------------------------------------------------
@@ -280,17 +278,12 @@ class MIVIADataset(Dataset):
         }
 
     def _find_video(self, video_id: str) -> Path:
-        """
-        Search for video in:
-          1. videos_dir directly
-          2. videos_dir/train/
-          3. videos_dir/val/
-        Tries common extensions at each level.
-        """
         search_dirs = [
             self.videos_dir,
             self.videos_dir / "train",
             self.videos_dir / "val",
+            self.videos_dir / "train" / "train",
+            self.videos_dir / "val" / "val",
         ]
         for folder in search_dirs:
             for ext in ["", ".mp4", ".avi", ".mov", ".mkv"]:
@@ -298,10 +291,10 @@ class MIVIADataset(Dataset):
                 if p.exists():
                     return p
         raise FileNotFoundError(
-            f"Video '{video_id}' not found in {self.videos_dir} "
-            f"(also searched train/ and val/ subfolders)"
+            f"Video '{video_id}' not found. Searched: {search_dirs}"
         )
-
+    
+    
     def _apply_transforms(self, clips_np: np.ndarray) -> torch.Tensor:
         """
         clips_np: (N, T, H, W, 3) uint8
@@ -365,15 +358,29 @@ def build_dataloaders(
     videos_dir: str,
     batch_size: int = 4,
     num_workers: int = 2,
+    use_weighted_sampler: bool = False,
     **dataset_kwargs,
 ) -> Tuple[DataLoader, DataLoader]:
     train_ds = MIVIADataset(train_csv, videos_dir, train=True, **dataset_kwargs)
     val_ds   = MIVIADataset(val_csv,   videos_dir, train=False, **dataset_kwargs)
 
+    # Weighted sampler to handle class imbalance
+    if use_weighted_sampler:
+        from torch.utils.data import WeightedRandomSampler
+        labels = [s["label"] for s in train_ds.samples]
+        class_counts = [labels.count(0), labels.count(1)]
+        weights = [1.0 / class_counts[l] for l in labels]
+        sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+        shuffle = False
+    else:
+        sampler = None
+        shuffle = True
+
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=sampler,
         num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=True,
